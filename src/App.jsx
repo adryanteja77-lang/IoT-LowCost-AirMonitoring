@@ -171,6 +171,7 @@ const chartReadings = useMemo(() => {
   return firebaseReadings
     .map((item) => ({
       ...item,
+       nodeId: item.nodeId ?? "UNKNOWN",
       temp:
         item.temp != null
           ? Number(item.temp)
@@ -208,20 +209,46 @@ const chartReadings = useMemo(() => {
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [notice, setNotice] = useState("");
 
-  const onlineNodes = useMemo(
-    () => mockNodes.filter((node) => node.status === "Online"),
-    []
+ const firestoreNodes = useMemo(() => {
+  const nodeMap = new Map();
+
+  chartReadings.forEach((reading) => {
+    if (!reading.nodeId || reading.nodeId === "UNKNOWN") return;
+
+    const existing = nodeMap.get(reading.nodeId);
+
+    // Ambil pembacaan terbaru berdasarkan waktu.
+    if (
+      !existing ||
+      String(reading.time).localeCompare(String(existing.time)) > 0
+    ) {
+      nodeMap.set(reading.nodeId, reading);
+    }
+  });
+
+  return Array.from(nodeMap.values()).map((reading) => ({
+    id: reading.nodeId,
+    name: reading.location ?? reading.nodeId,
+    area: reading.area ?? "Belum ditentukan",
+    status: "Data diterima",
+    lastSeen: reading.time || "Waktu belum tersedia",
+    temp: reading.temp,
+    humidity: reading.humidity,
+    time: reading.time,
+  }));
+}, [chartReadings]);
+
+const filteredNodes = useMemo(() => {
+  const query = search.trim().toLowerCase();
+
+  return firestoreNodes.filter((node) =>
+    `${node.id} ${node.name} ${node.area} ${node.status}`
+      .toLowerCase()
+      .includes(query)
   );
+}, [firestoreNodes, search]);
 
-  const filteredNodes = useMemo(() => {
-    const query = search.trim().toLowerCase();
-
-    return mockNodes.filter((node) =>
-      `${node.id} ${node.name} ${node.area} ${node.status}`
-        .toLowerCase()
-        .includes(query)
-    );
-  }, [search]);
+const onlineNodes = filteredNodes;
 
  
 const averageTemp = average(
@@ -343,7 +370,7 @@ const environmentalStatus =
               <span>{label}</span>
 
               {id === "nodes" && (
-                <span className="nav-count">{mockNodes.length}</span>
+                <span className="nav-count">{firestoreNodes.length}</span>
               )}
             </button>
           ))}
@@ -496,7 +523,17 @@ const environmentalStatus =
 
 {!readingsLoading && !readingsError && (
   <div className="info-callout">
-    Data suhu Firestore: {chartReadings.length} pembacaan
+    <strong>Data Firestore</strong>
+  <span>
+    Jumlah pembacaan: {chartReadings.length}
+  </span>
+
+  {chartReadings.map((reading) => (
+    <div key={reading.id}>
+      Node: {reading.nodeId} | Suhu: {reading.temp ?? "—"} °C |
+      Kelembapan: {reading.humidity ?? "—"}%
+    </div>
+  ))}
   </div>
 )}
 
@@ -522,6 +559,8 @@ const environmentalStatus =
 
           {page === "overview" && (
             <Overview
+              readingsLoading={readingsLoading}
+              readingsError={readingsError}
               environmentalStatus={environmentalStatus}
               range={range}
               setRange={setRange}
@@ -547,10 +586,11 @@ const environmentalStatus =
           )}
 
           {page === "nodes" && (
-            <Nodes
+         <Nodes
               search={search}
               setSearch={setSearch}
               filteredNodes={filteredNodes}
+              totalNodes={firestoreNodes.length}
             />
           )}
 
@@ -575,6 +615,8 @@ const environmentalStatus =
 // --------------------------------------------------
 
 function Overview({
+  readingsLoading,
+  readingsError,
   environmentalStatus,
   range,
   setRange,
@@ -609,14 +651,18 @@ function Overview({
       </div>
 
       <div className="metric-grid">
-        <MetricCard
-          title="Active sensor nodes"
-          value={onlineNodes.length}
-          suffix={` / ${mockNodes.length}`}
-          icon={RadioTower}
-          tone="green"
-          change={`${availability.toFixed(1)}% availability`}
-        />
+              <MetricCard
+                title="Connected sensor readings"
+                value={readingsLoading ? "..." : chartReadings.length}
+                suffix=""
+                icon={RadioTower}
+                tone="green"
+                change={
+                  readingsError
+                    ? "Firestore gagal dibaca"
+                    : "Jumlah dokumen Firestore, bukan jumlah node fisik"
+                }
+              />
 
         <MetricCard
           title="Temperature average"
@@ -653,7 +699,7 @@ function Overview({
           <div className="panel-header">
             <div>
               <h2>Sensor readings trend</h2>
-              <p>Contoh tren suhu selama hari ini</p>
+             <p>Tren suhu berdasarkan pembacaan Firestore</p>
             </div>
 
             <button
@@ -670,7 +716,7 @@ function Overview({
               Temperature <b>°C</b>
             </span>
 
-            <span className="chart-note">SIMULATED SERIES</span>
+            <span className="chart-note">FIRESTORE DATA</span>
           </div>
 
           <div className="chart-wrap">
@@ -741,9 +787,9 @@ function Overview({
           <div className="chart-footer">
             <span>
               <span className="legend-dot teal" />
-              Hourly sample data
+              Pembacaan tersimpan di Firestore
             </span>
-            <span>Not live sensor data</span>
+            <span>Belum tentu data sensor fisik</span>
           </div>
         </section>
 
@@ -1104,7 +1150,12 @@ function Analytics({ range, setRange, chartReadings }) {
 // MONITORING NODES PAGE
 // --------------------------------------------------
 
-function Nodes({ search, setSearch, filteredNodes }) {
+function Nodes({
+  search,
+  setSearch,
+  filteredNodes,
+  totalNodes,
+}) {
   const onlineCount = filteredNodes.filter(
     (node) => node.status === "Online"
   ).length;
@@ -1118,7 +1169,7 @@ function Nodes({ search, setSearch, filteredNodes }) {
 
         <div className="toolbar-right">
           <span className="node-total">
-            {filteredNodes.length} of {mockNodes.length} demo nodes
+            {filteredNodes.length} of {totalNodes} Firestore nodes
           </span>
         </div>
       </div>
@@ -1211,8 +1262,8 @@ function Nodes({ search, setSearch, filteredNodes }) {
 
         <div className="table-foot">
           <span>
-            Showing <strong>{filteredNodes.length}</strong> of {mockNodes.length}{" "}
-            simulated nodes
+            Showing <strong>{filteredNodes.length}</strong> of {totalNodes}{" "}
+            Firestore nodes
           </span>
 
           <span>
