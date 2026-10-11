@@ -1,4 +1,6 @@
-
+import { useSensorReadings } from "./useSensorReadings";
+import { useEffect } from "react";
+import { testFirebase } from "./testFirebase";
 import React, { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 
@@ -158,6 +160,47 @@ function downloadExcel(filename, nodes, readings) {
 // --------------------------------------------------
 
 function App() {
+  const {
+  readings: firebaseReadings,
+  loading: readingsLoading,
+  error: readingsError,
+} = useSensorReadings();
+  
+
+const chartReadings = useMemo(() => {
+  return firebaseReadings
+    .map((item) => ({
+      ...item,
+      temp:
+        item.temp != null
+          ? Number(item.temp)
+          : item.temperature != null
+            ? Number(item.temperature)
+            : null,
+      humidity:
+        item.humidity != null
+          ? Number(item.humidity)
+          : null,
+      co:
+        item.co != null
+          ? Number(item.co)
+          : null,
+      time: item.time ?? "",
+    }))
+    .map((item) => ({
+      ...item,
+      temp: Number.isFinite(item.temp) ? item.temp : null,
+      humidity: Number.isFinite(item.humidity)
+        ? item.humidity
+        : null,
+      co: Number.isFinite(item.co) ? item.co : null,
+    }))
+    .sort((a, b) =>
+      String(a.time).localeCompare(String(b.time))
+    );
+}, [firebaseReadings]);
+
+
   const [page, setPage] = useState("overview");
   const [range, setRange] = useState("Hari ini");
   const [search, setSearch] = useState("");
@@ -180,8 +223,32 @@ function App() {
     );
   }, [search]);
 
-  const averageTemp = average(onlineNodes.map((node) => node.temp));
-  const averageHumidity = average(onlineNodes.map((node) => node.humidity));
+ 
+const averageTemp = average(
+  chartReadings.map((reading) => reading.temp)
+);
+
+const averageHumidity = average(
+  chartReadings.map((reading) => reading.humidity)
+);
+
+const environmentalStatus =
+  averageTemp == null || averageHumidity == null
+    ? {
+        label: "Data belum lengkap",
+        color: "neutral",
+      }
+    : averageTemp > 35 || averageHumidity > 80
+      ? {
+          label: "Perlu perhatian",
+          color: "warning",
+        }
+      : {
+          label: "Kondisi terpantau",
+          color: "normal",
+        };
+
+
 
   const availability = mockNodes.length
     ? (onlineNodes.length / mockNodes.length) * 100
@@ -225,6 +292,9 @@ function App() {
       "Bali AirWatch adalah prototipe dengan data sensor simulasi."
     );
   };
+  useEffect(() => {
+  testFirebase();
+}, []);
 
   return (
     <div className="app-shell">
@@ -393,21 +463,43 @@ function App() {
             </div>
           </div>
 
-          <div className="simulation-banner">
-            <div className="sim-icon">
-              <ShieldCheck size={18} />
+         
+            <div className="simulation-banner">
+              <div className="sim-icon">
+                <ShieldCheck size={18} />
+              </div>
+
+              <div>
+                <strong>Mode prototipe aktif</strong>
+                <span>
+                  Suhu dan kelembapan dibaca dari Firestore.
+                  Data perangkat sensor dan pengukuran CO
+                  belum terverifikasi.
+                </span>
+              </div>
+
+              <span className="sim-tag">PROTOTYPE</span>
             </div>
 
-            <div>
-              <strong>Mode simulasi aktif</strong>
-              <span>
-                Semua nilai dan status adalah data dummy untuk pengembangan UI,
-                bukan hasil pengukuran sensor nyata.
-              </span>
-            </div>
+          
+{readingsLoading && (
+  <div className="info-callout">
+    Memuat data sensor dari Firestore...
+  </div>
+)}
 
-            <span className="sim-tag">DEMO DATA</span>
-          </div>
+{readingsError && (
+  <div className="info-callout" role="alert">
+    Gagal memuat Firestore: {readingsError}
+  </div>
+)}
+
+{!readingsLoading && !readingsError && (
+  <div className="info-callout">
+    Data suhu Firestore: {chartReadings.length} pembacaan
+  </div>
+)}
+
 
           {notice && (
             <div className="info-callout" role="status">
@@ -430,6 +522,7 @@ function App() {
 
           {page === "overview" && (
             <Overview
+              environmentalStatus={environmentalStatus}
               range={range}
               setRange={setRange}
               filteredNodes={filteredNodes}
@@ -437,18 +530,20 @@ function App() {
               averageTemp={averageTemp}
               averageHumidity={averageHumidity}
               availability={availability}
-              chartReadings={mockReadings}
+              chartReadings={chartReadings}
               lastUpdated={lastUpdated}
               setPage={setPage}
             />
           )}
 
           {page === "analytics" && (
-            <Analytics
-              range={range}
-              setRange={setRange}
-              chartReadings={mockReadings}
-            />
+           
+<Analytics
+  range={range}
+  setRange={setRange}
+  chartReadings={chartReadings}
+/>
+
           )}
 
           {page === "nodes" && (
@@ -480,6 +575,7 @@ function App() {
 // --------------------------------------------------
 
 function Overview({
+  environmentalStatus,
   range,
   setRange,
   filteredNodes,
@@ -528,7 +624,7 @@ function Overview({
           suffix="°C"
           icon={Thermometer}
           tone="orange"
-          change="Across online demo nodes"
+          change="Rata-rata data Firestore"
         />
 
         <MetricCard
@@ -537,17 +633,19 @@ function Overview({
           suffix="%"
           icon={Droplets}
           tone="blue"
-          change="Across online demo nodes"
+          change="Rata-rata data Firestore"
         />
 
-        <MetricCard
-          title="Latest CO reading"
-          value="N/A"
-          suffix=""
-          icon={AirVent}
-          tone="purple"
-          change="Calibration not configured"
-        />
+       
+          <MetricCard
+            title="MQ-7 carbon monoxide"
+            value="Belum terverifikasi"
+            suffix=""
+            icon={AirVent}
+            tone="purple"
+            change="Satuan dan kalibrasi belum diketahui"
+          />
+
       </div>
 
       <div className="main-grid">
@@ -880,14 +978,16 @@ function Analytics({ range, setRange, chartReadings }) {
           change="Not calibrated CO concentration"
         />
 
-        <MetricCard
-          title="IAQI"
-          value="N/A"
-          suffix=""
-          icon={Gauge}
-          tone="green"
-          change="Method not configured"
-        />
+       
+          <MetricCard
+            title="Air Quality Index"
+            value="N/A"
+            suffix=""
+            icon={Gauge}
+            tone="green"
+            change="Menunggu kalibrasi CO"
+          />
+
       </div>
 
       <div className="lower-grid analytics-lower">
@@ -899,7 +999,7 @@ function Analytics({ range, setRange, chartReadings }) {
                 <p>{chart.subtitle}</p>
               </div>
 
-              <span className="chart-note">DEMO DATA</span>
+              <span className="chart-note">FIRESTORE DATA</span>
             </div>
 
             <div className="small-chart">
