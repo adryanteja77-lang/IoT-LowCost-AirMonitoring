@@ -528,10 +528,16 @@ const environmentalStatus =
     Jumlah pembacaan: {chartReadings.length}
   </span>
 
-  {chartReadings.map((reading) => (
+    {chartReadings.map((reading) => (
     <div key={reading.id}>
       Node: {reading.nodeId} | Suhu: {reading.temp ?? "—"} °C |
-      Kelembapan: {reading.humidity ?? "—"}%
+      Kelembapan: {reading.humidity ?? "—"}% |
+      CO (mentah): {reading.co ?? "—"}
+      {reading.test === true && (
+        <strong style={{ marginLeft: 8, color: "#b45309" }}>
+          [DATA UJI]
+        </strong>
+      )}
     </div>
   ))}
   </div>

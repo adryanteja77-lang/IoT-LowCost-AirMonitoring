@@ -1,6 +1,5 @@
-
 import { useEffect, useState } from "react";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, onSnapshot, query, orderBy, limit } from "firebase/firestore";
 import { db } from "./firebase";
 
 export function useSensorReadings() {
@@ -9,13 +8,21 @@ export function useSensorReadings() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    const q = query(
+      collection(db, "readings"),
+      orderBy("createdAt", "desc"),
+      limit(100)
+    );
+
     const unsubscribe = onSnapshot(
-      collection(db, "sensor_readings"),
+      q,
       (snapshot) => {
-        const data = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+               const data = snapshot.docs
+          .map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }))
+          .reverse();
 
         setReadings(data);
         setError("");
