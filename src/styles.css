@@ -77,3 +77,99 @@ select:focus-visible {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* ===== Public View / iAQI (Bali AirWatch) ===== */
+.aqi-hero{margin-bottom:18px;border-left:5px solid #c9d4cf}
+.aqi-hero.cat-baik{border-left-color:#2c936d}
+.aqi-hero.cat-sedang{border-left-color:#2f80ed}
+.aqi-hero.cat-tidak-sehat{border-left-color:#e0a800}
+.aqi-hero.cat-sangat{border-left-color:#d64545}
+.aqi-hero.cat-berbahaya{border-left-color:#1f2933}
+.aqi-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.aqi-head h2{font:700 13px Manrope,sans-serif;color:#2c4239;margin:0}
+.aqi-head p{font-size:10px;color:#8a9891;margin:6px 0 0}
+.aqi-tags{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.tag{font-size:8px;letter-spacing:.9px;font-weight:700;color:#7d8d86;border:1px solid #dfe8e4;border-radius:5px;padding:5px 7px;white-space:nowrap}
+.tag-test{color:#a97722;background:#fff3df;border-color:#f1e3bf}
+.inline-tag{margin-left:8px;padding:2px 5px}
+.aqi-body{display:flex;align-items:center;gap:22px;margin:20px 0 22px}
+.aqi-number{font:800 76px/1 Manrope,sans-serif;letter-spacing:-3px;color:#213a31;min-width:110px}
+.aqi-number-empty{color:#b8c4be}
+.aqi-copy{display:flex;flex-direction:column;gap:9px;min-width:0;flex:1}
+.aqi-category{align-self:flex-start;font:700 14px Manrope,sans-serif;border-radius:8px;padding:7px 13px;color:#fff;background:#8a9a94}
+.cat-chip-baik{background:#2c936d}
+.cat-chip-sedang{background:#2f80ed}
+.cat-chip-tidak-sehat{background:#f2c230;color:#3d2f00}
+.cat-chip-sangat{background:#d64545}
+.cat-chip-berbahaya{background:#1f2933}
+.cat-chip-none{background:#eef2f0;color:#5f716a}
+.aqi-sub{font-size:11px;line-height:1.6;color:#6f8179}
+.aqi-progress{height:7px;max-width:360px;border-radius:5px;background:#edf2ef;overflow:hidden}
+.aqi-progress span{display:block;height:100%;background:#30a27f;border-radius:5px}
+.aqi-scale{position:relative;display:grid;grid-template-columns:repeat(5,1fr);gap:3px;height:10px}
+.aqi-scale .seg{display:block;border-radius:5px}
+.seg-baik{background:#2c936d}
+.seg-sedang{background:#2f80ed}
+.seg-tidak-sehat{background:#f2c230}
+.seg-sangat{background:#d64545}
+.seg-berbahaya{background:#1f2933}
+.aqi-scale i{position:absolute;top:-5px;width:4px;height:20px;margin-left:-2px;border-radius:3px;background:#fff;border:2px solid #213a31;box-sizing:border-box}
+.aqi-scale-labels{display:grid;grid-template-columns:repeat(5,1fr);gap:3px;margin-top:8px;font-size:9px;color:#8a9a93;text-align:center}
+.aqi-warning{margin-top:14px;padding:9px 12px;border-radius:8px;background:#fff3df;color:#8a6215;font-size:10px;line-height:1.5}
+.aqi-updated{display:flex;align-items:center;gap:6px;margin-top:14px;font-size:10px;color:#93a099}
+.public-metrics{margin-bottom:18px}
+.public-grid .insight-list{margin-top:16px}
+.chart-empty{display:grid;place-items:center;margin-top:16px;border:1px dashed #dfe8e4;border-radius:10px;color:#93a099;font-size:11px;text-align:center;padding:12px}
+.node-select{font-size:11px;color:#52645b;background:#fff;border:1px solid #e2eae6;border-radius:8px;padding:0 28px 0 11px;outline:none}
+.error-callout{background:#fff1ef;border-color:#f3d4cf;color:#b3402f}
+.error-callout span{color:#a8584c}
+.warn-callout{background:#fffaf0;border-color:#f1e3bf;color:#9a6b1b}
+.warn-callout span{color:#947b4d}
+.recent-panel{margin-bottom:16px}
+.button:disabled{opacity:.5;cursor:not-allowed}
+@media(max-width:680px){
+  .aqi-body{flex-direction:column;align-items:flex-start;gap:12px}
+  .aqi-number{font-size:60px;min-width:0}
+  .aqi-scale-labels{font-size:8px}
+  .node-select{height:38px}
+}
+
+/* ===== Peta, tren, saran ===== */
+.map-panel .map-box{height:340px;margin-top:16px;border-radius:10px;overflow:hidden;border:1px solid #e4ebe7;z-index:0}
+.map-pin-wrap{background:transparent;border:0}
+.map-pin{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;color:#fff;font:700 12px Manrope,sans-serif;border:3px solid #fff;box-shadow:0 2px 8px #0003;box-sizing:border-box}
+.map-pin.cat-chip-none{background:#8a9a94;color:#fff}
+.map-pin-off{opacity:.55}
+.map-pin-test{outline:2px dashed #e0a800;outline-offset:2px}
+.map-pin-planned{background:#fff;color:#8a9a94;border:2px dashed #9aa7a1;font-size:16px}
+.map-note{margin-top:10px;font-size:10px;color:#a97722;background:#fff3df;border-radius:8px;padding:8px 10px}
+.trend-panel{margin-bottom:0}
+.analytics-metrics+.trend-panel,.trend-panel+.lower-grid{margin-top:16px}
+.trend-panel+.lower-grid{margin-top:16px}
+.trend-icon{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;background:#eef2f0;color:#6f8179}
+.trend-naik{background:#fdeceb;color:#c0392b}
+.trend-turun{background:#e7f6ef;color:#19846d}
+.trend-main{margin-top:22px;font-size:15px;color:#3d5249}
+.trend-main strong{font:800 22px Manrope,sans-serif;margin:0 6px;color:#213a31}
+.trend-main span{font-size:12px;color:#8a9a94}
+.trend-sub{font-size:11px;line-height:1.6;color:#6f8179;margin:10px 0 0}
+.trend-note{font-size:10px;color:#93a099;margin:14px 0 0;border-top:1px solid #edf2ef;padding-top:12px}
+.aqi-advice{margin-top:16px;padding:11px 13px;border-radius:8px;background:#f0f8f5;color:#25705c;font-size:11px;line-height:1.6}
+.aqi-advice span{display:block;margin-top:4px;font-size:9px;color:#7b9a8f}
+
+/* ===== Metodologi ===== */
+.method-panel{margin-bottom:16px}
+.method-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:16px;margin-bottom:0}
+.method-grid .method-panel{margin-bottom:16px}
+.method-flow{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:18px}
+.method-step{background:#eef7f3;color:#1b6b59;border:1px solid #d7ebe3;border-radius:9px;padding:9px 13px;font-size:12px;font-weight:700}
+.method-arrow{color:#9aa7a1;font-size:15px}
+.method-note{font-size:11px;line-height:1.7;color:#6f8179;margin:14px 0 0}
+.method-list{margin:16px 0 0;padding-left:20px;font-size:12px;line-height:1.7;color:#5f716a}
+.method-list li{margin-bottom:12px;padding-left:4px}
+.method-list li::marker{color:#168574;font-weight:700}
+.method-list strong{color:#33483f}
+.method-formula{display:block;margin-top:8px;padding:9px 12px;border-radius:8px;background:#f4f8f6;border:1px solid #e4ebe7;font:600 12px ui-monospace,Menlo,Consolas,monospace;color:#2c4239;overflow-x:auto}
+.method-chip{font-size:11px;padding:5px 10px;border-radius:7px;display:inline-block}
+@media(max-width:900px){.method-grid{grid-template-columns:1fr}}
+.method-panel .table-scroll{margin-top:16px}
