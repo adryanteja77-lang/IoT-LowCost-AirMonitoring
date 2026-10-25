@@ -16,7 +16,10 @@ const COMPUTE_EVERY_MS = 5 * 60_000; // hitung ulang iAQI maks 1x per 5 menit pe
 const inRange = (v, min, max) => typeof v === "number" && Number.isFinite(v) && v >= min && v <= max;
 const hourKey = (ms) => new Date(ms).toISOString().slice(0, 13).replace(/[-T]/g, "");
 
-async function addToHourly(nodeId, ugm3, isTest) {
+// envCount menghitung berapa pembacaan yang ikut dijumlahkan di sumPpm/sumTemp/sumHum.
+// Dokumen jam yang dibuat sebelum fitur ini ada tidak memilikinya, jadi rata-rata
+// suhu/kelembapan/ppm memakai envCount, bukan count.
+async function addToHourly(nodeId, d, ugm3, isTest) {
   const now = Date.now();
   await db.collection("hourly").doc(`${nodeId}_${hourKey(now)}`).set(
     {
@@ -25,6 +28,10 @@ async function addToHourly(nodeId, ugm3, isTest) {
       sumUgm3: FieldValue.increment(ugm3),
       count: FieldValue.increment(1),
       testCount: FieldValue.increment(isTest ? 1 : 0),
+      sumPpm: FieldValue.increment(d.co),
+      sumTemp: FieldValue.increment(d.temp),
+      sumHum: FieldValue.increment(d.humidity),
+      envCount: FieldValue.increment(1),
     },
     { merge: true }
   );
@@ -66,6 +73,18 @@ async function updateStatus(nodeId) {
     test: anyTest,
     updatedAt: FieldValue.serverTimestamp(),
   });
+
+  // Riwayat iAQI: satu dokumen per node per jam (nilai terakhir di jam itu).
+  await db.collection("iaqi_log").doc(`${nodeId}_${hourKey(now)}`).set({
+    nodeId,
+    hourStart: Timestamp.fromMillis(Math.floor(now / 3600_000) * 3600_000),
+    iaqi, // null jika data belum cukup
+    avgCoUgm3: avg,
+    validHours,
+    enough,
+    test: anyTest,
+    updatedAt: FieldValue.serverTimestamp(),
+  });
 }
 
 export default async function handler(req, res) {
@@ -86,16 +105,21 @@ export default async function handler(req, res) {
   }
 
   const isTest = d.test === true;
+  // warmup:true = sensor baru dinyalakan / masih stabil. Data disimpan dan ditampilkan,
+  // tetapi TIDAK dihitung ke rata-rata per jam, jadi tidak mempengaruhi iAQI.
+  const isWarmup = d.warmup === true;
   const coUgm3 = ppmToUgm3(d.co, d.temp);
 
   try {
     await db.collection(COLLECTION).add({
       nodeId, temp: d.temp, humidity: d.humidity, co: d.co, coUgm3,
-      test: isTest, createdAt: FieldValue.serverTimestamp(),
+      test: isTest, warmup: isWarmup, createdAt: FieldValue.serverTimestamp(),
     });
-    await addToHourly(nodeId, coUgm3, isTest);
-    await updateStatus(nodeId);
-    return res.status(200).json({ ok: true });
+    if (!isWarmup) {
+      await addToHourly(nodeId, d, coUgm3, isTest);
+      await updateStatus(nodeId);
+    }
+    return res.status(200).json({ ok: true, warmup: isWarmup });
   } catch (e) {
     console.error("Gagal tulis Firestore:", e.message);
     return res.status(500).json({ error: "firestore" });

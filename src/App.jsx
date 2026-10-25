@@ -30,8 +30,13 @@ import {
   Area,
   AreaChart,
   CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
   ReferenceLine,
   ResponsiveContainer,
+  Scatter,
+  ScatterChart,
   Tooltip,
   XAxis,
   YAxis,
@@ -41,6 +46,7 @@ import {
   useSensorReadings,
   useNodeStatus,
   useHourly,
+  useIaqiLog,
   formatClock,
   formatDateTime,
 } from "./useSensorReadings";
@@ -113,6 +119,50 @@ function scalePosition(iaqi) {
   return ((idx + frac) / SCALE.length) * 100;
 }
 
+const RANGES = [
+  { id: "24", label: "24 jam", hours: 24 },
+  { id: "72", label: "3 hari", hours: 72 },
+  { id: "168", label: "7 hari", hours: 168 },
+];
+const NODE_COLORS = ["#168574", "#8564c7", "#c78338", "#4d8fd7", "#c0392b"];
+const WARMUP_MIN = 60;
+
+// Label sumbu-X: jam saja untuk 24 jam, tanggal + jam untuk rentang lebih panjang.
+function axisLabel(ms, long) {
+  if (ms == null) return "";
+  if (!long) return formatClock(ms);
+  const d = new Date(ms);
+  return `${d.getDate()}/${d.getMonth() + 1} ${formatClock(ms)}`;
+}
+
+// Gabungkan deret per node menjadi satu tabel: satu baris per jam, satu kolom per node.
+function pivotByHour(rows, valueKey, long) {
+  const byHour = new Map();
+  rows.forEach((r) => {
+    if (r.hourMs == null || r[valueKey] == null) return;
+    const row = byHour.get(r.hourMs) ?? { hourMs: r.hourMs, time: axisLabel(r.hourMs, long) };
+    row[r.nodeId] = r[valueKey];
+    byHour.set(r.hourMs, row);
+  });
+  return [...byHour.values()].sort((a, b) => a.hourMs - b.hourMs);
+}
+
+// Korelasi Pearson; null kalau data kurang atau tanpa variasi.
+function pearson(pairs) {
+  const n = pairs.length;
+  if (n < 6) return null;
+  const mx = average(pairs.map((p) => p.x));
+  const my = average(pairs.map((p) => p.y));
+  let sxy = 0, sxx = 0, syy = 0;
+  pairs.forEach((p) => {
+    sxy += (p.x - mx) * (p.y - my);
+    sxx += (p.x - mx) ** 2;
+    syy += (p.y - my) ** 2;
+  });
+  if (sxx === 0 || syy === 0) return null;
+  return sxy / Math.sqrt(sxx * syy);
+}
+
 // --------------------------------------------------
 // EXCEL EXPORT (data nyata dari Firestore)
 // --------------------------------------------------
@@ -163,13 +213,16 @@ function downloadExcel(filename, { status, readings, hourly }) {
     "Kelembapan (%)": r.humidity ?? "",
     "CO indikatif (ppm)": r.co ?? "",
     "CO (µg/m³)": r.coUgm3 != null ? Math.round(r.coUgm3) : "",
-    "Jenis data": r.test ? "Uji" : "Terukur",
+    "Jenis data": r.test ? "Uji" : r.warmup ? "Pemanasan" : "Terukur",
   }));
 
   const hourlyRows = hourly.map((h) => ({
     Jam: formatDateTime(h.hourMs),
     Node: h.nodeId,
     "Rata-rata CO (µg/m³)": h.avgUgm3 != null ? Math.round(h.avgUgm3) : "",
+    "Rata-rata CO (ppm)": h.avgPpm != null ? Number(h.avgPpm.toFixed(3)) : "",
+    "Rata-rata suhu (°C)": h.avgTemp != null ? Number(h.avgTemp.toFixed(2)) : "",
+    "Rata-rata RH (%)": h.avgHum != null ? Number(h.avgHum.toFixed(1)) : "",
     "Jumlah sampel": h.count,
     "Sampel uji": h.testCount,
   }));
@@ -213,7 +266,11 @@ function App() {
     hourly: rawHourly,
     loading: hourlyLoading,
     error: hourlyError,
-  } = useHourly();
+  } = useHourly(24 * 7 + 2);
+  const {
+    log: rawIaqiLog,
+    error: iaqiLogError,
+  } = useIaqiLog(24 * 7 + 2);
 
   const [page, setPage] = useState("overview");
   const [search, setSearch] = useState("");
@@ -221,6 +278,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [now, setNow] = useState(Date.now());
+  const [rangeId, setRangeId] = useState("24");
 
   // Perbarui "sekarang" tiap 30 detik supaya status online/offline ikut berubah.
   useEffect(() => {
@@ -233,6 +291,7 @@ function App() {
     readingsError && `readings: ${readingsError}`,
     statusError && `status: ${statusError}`,
     hourlyError && `hourly: ${hourlyError}`,
+    iaqiLogError && `iaqi_log: ${iaqiLogError}`,
   ].filter(Boolean);
 
   // Normalisasi angka pembacaan.
@@ -246,6 +305,7 @@ function App() {
         co: toNumber(item.co),
         coUgm3: toNumber(item.coUgm3),
         test: item.test === true,
+        warmup: item.warmup === true,
       })),
     [rawReadings]
   );
@@ -279,6 +339,10 @@ function App() {
         humidity: r?.humidity ?? null,
         co: r?.co ?? null,
         test: r?.test === true,
+        warmup: r?.warmup === true,
+        iaqi: s?.enough === true ? s.iaqi ?? null : null,
+        category: s?.enough === true ? s.category ?? null : null,
+        validHours: s?.validHours ?? 0,
       };
     });
   }, [readings, statusMap, now]);
@@ -300,6 +364,16 @@ function App() {
         (h) => h.nodeId === activeId && h.hourMs != null && h.hourMs >= now - 24 * 3600_000
       ),
     [rawHourly, activeId, now]
+  );
+
+  const range = RANGES.find((r) => r.id === rangeId) ?? RANGES[0];
+  const rangeHourly = useMemo(
+    () => rawHourly.filter((h) => h.hourMs != null && h.hourMs >= now - range.hours * 3600_000),
+    [rawHourly, now, range]
+  );
+  const rangeIaqi = useMemo(
+    () => rawIaqiLog.filter((h) => h.hourMs != null && h.hourMs >= now - range.hours * 3600_000),
+    [rawIaqiLog, now, range]
   );
 
   const latestReading = nodeReadings.length
@@ -345,7 +419,7 @@ function App() {
       downloadExcel(`bali-airwatch-${activeId || "data"}-${date}.xlsx`, {
         status,
         readings: nodeReadings,
-        hourly: nodeHourly,
+        hourly: rawHourly.filter((h) => h.nodeId === activeId),
       });
       setNotice("Laporan Excel dibuat dari data Firestore node yang dipilih.");
     } catch (error) {
@@ -566,7 +640,7 @@ function App() {
                 <strong>Gagal memuat sebagian data Firestore</strong>
                 <span>
                   {errors.join(" | ")}. Cek aturan Firestore (izin baca untuk
-                  readings, status, hourly) dan variabel VITE_FIREBASE_*.
+                  readings, status, hourly, iaqi_log) dan variabel VITE_FIREBASE_*.
                 </span>
               </div>
             </div>
@@ -604,6 +678,9 @@ function App() {
               mapPoints={mapPoints}
               unmapped={unmapped}
               activeMeta={activeMeta}
+              nodes={nodes}
+              onPickNode={setSelectedNodeId}
+              activeId={activeId}
             />
           )}
 
@@ -613,6 +690,12 @@ function App() {
               status={status}
               readings={nodeReadings}
               hourly={nodeHourly}
+              rangeHourly={rangeHourly}
+              rangeIaqi={rangeIaqi}
+              nodes={nodes}
+              activeId={activeId}
+              range={range}
+              setRangeId={setRangeId}
               trend={trend}
             />
           )}
@@ -751,7 +834,7 @@ function AqiHero({ node, status, now, meta }) {
   );
 }
 
-function PublicView({ loading, node, status, latestReading, readings, setPage, now, trend, mapPoints, unmapped, activeMeta }) {
+function PublicView({ loading, node, status, latestReading, readings, setPage, now, trend, mapPoints, unmapped, activeMeta, nodes, onPickNode, activeId }) {
   const lastMs = latestReading?.createdMs ?? null;
   const fresh = lastMs != null && now - lastMs <= OFFLINE_AFTER_MS;
 
@@ -782,7 +865,9 @@ function PublicView({ loading, node, status, latestReading, readings, setPage, n
           change={
             latestReading?.test
               ? "Data uji, belum terkalibrasi"
-              : "Perkiraan sensor MQ-7"
+              : latestReading?.warmup
+                ? "Sensor masih pemanasan, belum dihitung"
+                : "Perkiraan sensor MQ-7"
           }
         />
 
@@ -813,6 +898,42 @@ function PublicView({ loading, node, status, latestReading, readings, setPage, n
           change={lastMs ? `Terakhir terlihat ${formatDateTime(lastMs)}` : "Belum ada pesan"}
         />
       </div>
+
+      {nodes.length > 0 && (
+        <section className="panel node-list-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Semua lokasi</h2>
+              <p>Pilih lokasi untuk melihat detailnya</p>
+            </div>
+            <RadioTower size={19} color="#168574" />
+          </div>
+          <div className="node-list">
+            {nodes.map((n) => {
+              const key = n.iaqi != null ? CATEGORY_KEY[n.category] ?? "baik" : "none";
+              return (
+                <button
+                  key={n.id}
+                  className={`node-list-item ${n.id === activeId ? "active" : ""}`}
+                  onClick={() => onPickNode(n.id)}
+                >
+                  <span className={`node-list-badge cat-chip-${key}`}>{n.iaqi ?? "N/A"}</span>
+                  <span className="node-list-copy">
+                    <strong>{NODE_META[n.id]?.name ?? n.id}</strong>
+                    <span>
+                      {n.iaqi != null
+                        ? n.category
+                        : `Data ${n.validHours}/${REQUIRED_HOURS} jam`}
+                      {" · "}
+                      {n.status === "Online" ? (n.warmup ? "Pemanasan" : "Online") : "Offline"}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <div className="main-grid public-grid">
         <section className="panel map-panel">
@@ -895,13 +1016,32 @@ function PublicView({ loading, node, status, latestReading, readings, setPage, n
 // STAKEHOLDER ANALYTICS
 // --------------------------------------------------
 
-function Analytics({ node, status, readings, hourly, trend }) {
+function Analytics({ node, status, readings, hourly, rangeHourly, rangeIaqi, nodes, activeId, range, setRangeId, trend }) {
   const meanTemp = average(readings.map((r) => r.temp));
   const meanHumidity = average(readings.map((r) => r.humidity));
-  const hourlyChart = hourly.map((h) => ({
-    time: h.label,
+  const long = range.hours > 24;
+  const nodeRange = rangeHourly.filter((h) => h.nodeId === activeId);
+  const hourlyChart = nodeRange.map((h) => ({
+    time: axisLabel(h.hourMs, long),
     avg: h.avgUgm3 != null ? Math.round(h.avgUgm3) : null,
   }));
+  const nodeIds = [...new Set(rangeHourly.map((h) => h.nodeId))].sort();
+  const compareData = pivotByHour(
+    rangeHourly.map((h) => ({ ...h, ugm3: h.avgUgm3 != null ? Math.round(h.avgUgm3) : null })),
+    "ugm3",
+    long
+  );
+  const iaqiNodeIds = [...new Set(rangeIaqi.map((h) => h.nodeId))].sort();
+  const iaqiData = pivotByHour(
+    rangeIaqi.filter((h) => h.enough && h.iaqi != null),
+    "iaqi",
+    long
+  );
+  const envHours = nodeRange.filter((h) => h.avgPpm != null && h.avgTemp != null && h.avgHum != null && h.testCount === 0);
+  const tempPairs = envHours.map((h) => ({ x: Number(h.avgTemp.toFixed(1)), y: Number(h.avgPpm.toFixed(2)) }));
+  const humPairs = envHours.map((h) => ({ x: Number(h.avgHum.toFixed(0)), y: Number(h.avgPpm.toFixed(2)) }));
+  const rTemp = pearson(tempPairs);
+  const rHum = pearson(humPairs);
   const recent = [...readings].reverse().slice(0, 15);
   const enough = status?.enough === true && status.iaqi != null;
 
@@ -910,6 +1050,20 @@ function Analytics({ node, status, readings, hourly, trend }) {
       <div className="section-toolbar">
         <div className="section-label">
           ANALITIK NODE {node ? node.id : ""} <span className="tiny-dot" />
+        </div>
+
+        <div className="toolbar-right">
+          <div className="range-switch" role="group" aria-label="Rentang waktu">
+            {RANGES.map((r) => (
+              <button
+                key={r.id}
+                className={`range-btn ${r.id === range.id ? "active" : ""}`}
+                onClick={() => setRangeId(r.id)}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -976,7 +1130,7 @@ function Analytics({ node, status, readings, hourly, trend }) {
           <div className="panel-header">
             <div>
               <h2>Rata-rata CO per jam</h2>
-              <p>µg/m³, 24 jam terakhir · garis = batas kategori Baik</p>
+              <p>µg/m³, {range.label} terakhir · garis = batas kategori Baik</p>
             </div>
             <span className="chart-note">HOURLY</span>
           </div>
@@ -1046,6 +1200,105 @@ function Analytics({ node, status, readings, hourly, trend }) {
         </section>
       </div>
 
+      {nodeIds.length > 1 && (
+        <section className="panel chart-panel analytics-wide">
+          <div className="panel-header">
+            <div>
+              <h2>Perbandingan antar node</h2>
+              <p>Rata-rata CO per jam (µg/m³), {range.label} terakhir. Tiap node punya sensor dan Ro sendiri, jadi bandingkan pola, bukan angka mutlak.</p>
+            </div>
+            <span className="chart-note">HOURLY</span>
+          </div>
+          <div className="large-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={compareData} margin={{ top: 10, right: 8, left: -14, bottom: 0 }}>
+                <CartesianGrid stroke="#e9efed" strokeDasharray="4 5" vertical={false} />
+                <XAxis dataKey="time" tickLine={false} axisLine={false} tick={{ fill: "#87938f", fontSize: 10 }} minTickGap={28} />
+                <YAxis tickLine={false} axisLine={false} tick={{ fill: "#87938f", fontSize: 10 }} />
+                <Tooltip />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {nodeIds.map((id, i) => (
+                  <Line key={id} type="monotone" dataKey={id} stroke={NODE_COLORS[i % NODE_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+      )}
+
+      <div className="lower-grid analytics-lower">
+        <section className="panel chart-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Suhu vs CO</h2>
+              <p>
+                Tiap titik = rata-rata satu jam ({tempPairs.length} jam).{" "}
+                {rTemp == null ? "Butuh ≥6 jam data" : `Korelasi r = ${rTemp.toFixed(2)}`}
+              </p>
+            </div>
+            <span className="chart-note">SCATTER</span>
+          </div>
+          <ScatterPanel data={tempPairs} xName="Suhu" xUnit="°C" color="#c78338" />
+        </section>
+
+        <section className="panel chart-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Kelembapan vs CO</h2>
+              <p>
+                Tiap titik = rata-rata satu jam ({humPairs.length} jam).{" "}
+                {rHum == null ? "Butuh ≥6 jam data" : `Korelasi r = ${rHum.toFixed(2)}`}
+              </p>
+            </div>
+            <span className="chart-note">SCATTER</span>
+          </div>
+          <ScatterPanel data={humPairs} xName="Kelembapan" xUnit="%" color="#4d8fd7" />
+        </section>
+      </div>
+
+      <div className="info-callout">
+        <ShieldCheck size={18} />
+        <div>
+          <strong>Cara membaca scatter</strong>
+          <span>
+            Kalau titik membentuk pola miring jelas dan korelasi |r| besar pada udara yang sama bersihnya,
+            CO terbaca ikut berubah karena suhu atau kelembapan, bukan karena gas. Ini dasar koreksi suhu/RH.
+            Korelasi baru berarti kalau suhu dan RH bervariasi lebar (hujan, malam, AC) dan datanya cukup banyak.
+          </span>
+        </div>
+      </div>
+
+      {iaqiNodeIds.length > 0 && (
+        <section className="panel chart-panel analytics-wide">
+          <div className="panel-header">
+            <div>
+              <h2>Riwayat iAQI</h2>
+              <p>Hanya jam saat data sudah cukup (≥{REQUIRED_HOURS} jam valid), {range.label} terakhir</p>
+            </div>
+            <span className="chart-note">iAQI</span>
+          </div>
+          {iaqiData.length > 0 ? (
+            <div className="small-chart">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={iaqiData} margin={{ top: 10, right: 8, left: -14, bottom: 0 }}>
+                  <CartesianGrid stroke="#e9efed" strokeDasharray="4 5" vertical={false} />
+                  <XAxis dataKey="time" tickLine={false} axisLine={false} tick={{ fill: "#87938f", fontSize: 10 }} minTickGap={28} />
+                  <YAxis domain={[0, (m) => Math.max(60, Math.ceil(m * 1.2))]} tickLine={false} axisLine={false} tick={{ fill: "#87938f", fontSize: 10 }} />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <ReferenceLine y={50} stroke="#c0392b" strokeDasharray="5 4" label={{ value: "Batas Baik", fill: "#c0392b", fontSize: 10, position: "insideTopRight" }} />
+                  {iaqiNodeIds.map((id, i) => (
+                    <Line key={id} type="monotone" dataKey={id} stroke={NODE_COLORS[i % NODE_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="small-chart chart-empty">Belum ada jam dengan data cukup untuk dihitung iAQI-nya.</div>
+          )}
+        </section>
+      )}
+
       <section className="panel nodes-full-panel recent-panel">
         <div className="panel-header nodes-header">
           <div>
@@ -1080,10 +1333,10 @@ function Analytics({ node, status, readings, hourly, trend }) {
                   </td>
                   <td>
                     <span
-                      className={`status-pill ${r.test ? "status-warning" : "status-online"}`}
+                      className={`status-pill ${r.test || r.warmup ? "status-warning" : "status-online"}`}
                     >
                       <i />
-                      {r.test ? "Uji" : "Terukur"}
+                      {r.test ? "Uji" : r.warmup ? "Pemanasan" : "Terukur"}
                     </span>
                   </td>
                 </tr>
@@ -1247,7 +1500,7 @@ function Methodology() {
         </div>
 
         <div className="method-flow">
-          {["Node sensor", "MQTT (EMQX)", "Bridge", "Firestore", "Dashboard web"].map((label, i, arr) => (
+          {["Node sensor", "MQTT (EMQX)", "Webhook (Vercel)", "Firestore", "Dashboard web"].map((label, i, arr) => (
             <React.Fragment key={label}>
               <span className="method-step">{label}</span>
               {i < arr.length - 1 && <span className="method-arrow">→</span>}
@@ -1256,8 +1509,9 @@ function Methodology() {
         </div>
         <p className="method-note">
           Tiap node mengukur CO (MQ-7), suhu, dan kelembapan (DHT22) lalu mengirimnya sekitar tiap 2,5 menit
-          lewat MQTT. Bridge menyimpan data ke Firestore dan menghitung iAQI. Dashboard menampilkan hasilnya
-          secara langsung.
+          lewat MQTT. Broker meneruskan tiap pesan ke fungsi server (webhook) yang memvalidasi nilainya, menyimpannya
+          ke Firestore, lalu menghitung iAQI. Dashboard menampilkan hasilnya secara langsung. Tidak ada komputer
+          pribadi yang harus menyala.
         </p>
       </section>
 
@@ -1285,7 +1539,8 @@ function Methodology() {
             </li>
             <li>
               <strong>Cek kecukupan data.</strong> Minimal {REQUIRED_HOURS} dari 24 jam (75%) harus punya data.
-              Kalau kurang, iAQI tidak dihitung dan tampil "Data belum cukup".
+              Satu jam dihitung valid kalau ada minimal satu pembacaan terukur di jam itu. Kalau kurang, iAQI
+              tidak dihitung dan tampil "Data belum cukup".
             </li>
             <li>
               <strong>Hitung indeks.</strong> Interpolasi linear antar titik batas:
@@ -1346,8 +1601,13 @@ function Methodology() {
             dibandingkan dengan alat ukur referensi.
           </li>
           <li>
-            Pembacaan MQ-7 belum dikoreksi suhu dan kelembapan. DHT22 dipakai untuk konversi satuan dan
-            sebagai data pendukung.
+            Pembacaan MQ-7 saat ini <strong>belum dikoreksi</strong> suhu dan kelembapan. DHT22 dipakai untuk
+            konversi satuan dan sebagai data pendukung. Panel scatter di Analytics menunjukkan hubungan
+            empiris suhu/RH terhadap CO per jam; koreksi hanya diterapkan setelah data cukup membuktikannya.
+          </li>
+          <li>
+            Sensor MQ-7 butuh waktu pemanasan. Setelah node baru menyala (atau lama mati), pembacaan 60 menit
+            pertama ditandai "Pemanasan" dan tidak dihitung ke rata-rata jam maupun iAQI.
           </li>
           <li>iAQI hanya dihitung dari CO. Polutan lain (PM2.5, PM10, O₃, NO₂, SO₂) belum diukur.</li>
           <li>
@@ -1362,6 +1622,25 @@ function Methodology() {
         </ul>
       </section>
     </>
+  );
+}
+
+function ScatterPanel({ data, xName, xUnit, color }) {
+  if (data.length < 2) {
+    return <div className="small-chart chart-empty">Belum cukup data per jam.</div>;
+  }
+  return (
+    <div className="small-chart">
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart margin={{ top: 10, right: 12, left: -10, bottom: 0 }}>
+          <CartesianGrid stroke="#e9efed" strokeDasharray="4 5" />
+          <XAxis type="number" dataKey="x" name={xName} unit={xUnit} domain={["auto", "auto"]} tickLine={false} axisLine={false} tick={{ fill: "#87938f", fontSize: 10 }} />
+          <YAxis type="number" dataKey="y" name="CO" unit=" ppm" domain={["auto", "auto"]} tickLine={false} axisLine={false} tick={{ fill: "#87938f", fontSize: 10 }} />
+          <Tooltip cursor={{ strokeDasharray: "3 3" }} />
+          <Scatter data={data} fill={color} fillOpacity={0.75} />
+        </ScatterChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

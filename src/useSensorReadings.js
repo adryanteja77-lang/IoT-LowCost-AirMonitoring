@@ -107,7 +107,7 @@ export function useNodeStatus() {
   return { statusMap, loading, error };
 }
 
-// ---------- koleksi "hourly": agregat per jam (untuk grafik 24 jam) ----------
+// ---------- koleksi "hourly": agregat per jam (grafik 24 jam sampai 7 hari) ----------
 export function useHourly(hoursBack = 26) {
   const [hourly, setHourly] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -136,6 +136,11 @@ export function useHourly(hoursBack = 26) {
               count: raw.count ?? 0,
               testCount: raw.testCount ?? 0,
               avgUgm3: raw.count ? raw.sumUgm3 / raw.count : null,
+              // Agregat lingkungan (hanya ada pada dokumen jam yang dibuat setelah fitur ini aktif).
+              envCount: raw.envCount ?? 0,
+              avgPpm: raw.envCount ? raw.sumPpm / raw.envCount : null,
+              avgTemp: raw.envCount ? raw.sumTemp / raw.envCount : null,
+              avgHum: raw.envCount ? raw.sumHum / raw.envCount : null,
             };
           })
         );
@@ -152,4 +157,52 @@ export function useHourly(hoursBack = 26) {
   }, [hoursBack]);
 
   return { hourly, loading, error };
+}
+
+// ---------- koleksi "iaqi_log": riwayat iAQI per node per jam ----------
+export function useIaqiLog(hoursBack = 170) {
+  const [log, setLog] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const since = Timestamp.fromMillis(Date.now() - hoursBack * 3600_000);
+    const q = query(
+      collection(db, "iaqi_log"),
+      where("hourStart", ">=", since),
+      orderBy("hourStart", "asc")
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        setLog(
+          snapshot.docs.map((doc) => {
+            const raw = doc.data();
+            const hourMs = tsToMs(raw.hourStart);
+            return {
+              id: doc.id,
+              nodeId: raw.nodeId,
+              hourMs,
+              iaqi: typeof raw.iaqi === "number" ? raw.iaqi : null,
+              avgCoUgm3: raw.avgCoUgm3 ?? null,
+              validHours: raw.validHours ?? 0,
+              enough: raw.enough === true,
+              test: raw.test === true,
+            };
+          })
+        );
+        setError("");
+        setLoading(false);
+      },
+      (err) => {
+        console.error("Firestore listener error (iaqi_log):", err);
+        setError(err.message);
+        setLoading(false);
+      }
+    );
+    return unsubscribe;
+  }, [hoursBack]);
+
+  return { log, loading, error };
 }
