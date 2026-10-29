@@ -141,6 +141,10 @@ export function useHourly(hoursBack = 26) {
               avgPpm: raw.envCount ? raw.sumPpm / raw.envCount : null,
               avgTemp: raw.envCount ? raw.sumTemp / raw.envCount : null,
               avgHum: raw.envCount ? raw.sumHum / raw.envCount : null,
+              // Koreksi suhu/RH (eksperimental): hanya ada jika koefisien node sudah diaktifkan.
+              compCount: raw.compCount ?? 0,
+              avgPpmComp: raw.compCount ? raw.sumPpmComp / raw.compCount : null,
+              avgRs: raw.rsCount ? raw.sumRs / raw.rsCount : null,
             };
           })
         );

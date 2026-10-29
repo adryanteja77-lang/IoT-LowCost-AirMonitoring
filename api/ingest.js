@@ -1,8 +1,9 @@
 // Vercel Function: menerima data dari EMQX (Data Integration > HTTP Server)
-// dan menulis ke Firestore. Menggantikan bridge Node.js yang harus hidup terus.
+// dan menulis ke Firestore.
 import { initializeApp, cert, getApps } from "firebase-admin/app";
 import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { ispuFromCO, ispuCategory, ppmToUgm3 } from "./_ispu.js";
+import { compensate } from "./_comp.js";
 
 if (!getApps().length) {
   initializeApp({ credential: cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON)) });
@@ -16,25 +17,26 @@ const COMPUTE_EVERY_MS = 5 * 60_000; // hitung ulang iAQI maks 1x per 5 menit pe
 const inRange = (v, min, max) => typeof v === "number" && Number.isFinite(v) && v >= min && v <= max;
 const hourKey = (ms) => new Date(ms).toISOString().slice(0, 13).replace(/[-T]/g, "");
 
-// envCount menghitung berapa pembacaan yang ikut dijumlahkan di sumPpm/sumTemp/sumHum.
-// Dokumen jam yang dibuat sebelum fitur ini ada tidak memilikinya, jadi rata-rata
-// suhu/kelembapan/ppm memakai envCount, bukan count.
-async function addToHourly(nodeId, d, ugm3, isTest) {
+// envCount = jumlah pembacaan yang ikut dijumlahkan di sumPpm/sumTemp/sumHum/sumRs.
+// sumUgm3  = dasar iAQI (terkoreksi jika node divalidasi, selain itu mentah).
+// sumUgm3Raw selalu mentah; compCount/sumPpmComp hanya jika koreksi tersedia.
+async function addToHourly(nodeId, d, ugm3Used, ugm3Raw, comp, isTest) {
   const now = Date.now();
-  await db.collection("hourly").doc(`${nodeId}_${hourKey(now)}`).set(
-    {
-      nodeId,
-      hourStart: Timestamp.fromMillis(Math.floor(now / 3600_000) * 3600_000),
-      sumUgm3: FieldValue.increment(ugm3),
-      count: FieldValue.increment(1),
-      testCount: FieldValue.increment(isTest ? 1 : 0),
-      sumPpm: FieldValue.increment(d.co),
-      sumTemp: FieldValue.increment(d.temp),
-      sumHum: FieldValue.increment(d.humidity),
-      envCount: FieldValue.increment(1),
-    },
-    { merge: true }
-  );
+  const upd = {
+    nodeId,
+    hourStart: Timestamp.fromMillis(Math.floor(now / 3600_000) * 3600_000),
+    sumUgm3: FieldValue.increment(ugm3Used),
+    sumUgm3Raw: FieldValue.increment(ugm3Raw),
+    count: FieldValue.increment(1),
+    testCount: FieldValue.increment(isTest ? 1 : 0),
+    sumPpm: FieldValue.increment(d.co),
+    sumTemp: FieldValue.increment(d.temp),
+    sumHum: FieldValue.increment(d.humidity),
+    envCount: FieldValue.increment(1),
+  };
+  if (comp.rs) { upd.sumRs = FieldValue.increment(comp.rs); upd.rsCount = FieldValue.increment(1); }
+  if (comp.coComp !== null) { upd.sumPpmComp = FieldValue.increment(comp.coComp); upd.compCount = FieldValue.increment(1); }
+  await db.collection("hourly").doc(`${nodeId}_${hourKey(now)}`).set(upd, { merge: true });
 }
 
 async function updateStatus(nodeId) {
@@ -103,23 +105,33 @@ export default async function handler(req, res) {
   if (!inRange(d.temp, -40, 80) || !inRange(d.humidity, 0, 100) || !inRange(d.co, 0, 1000)) {
     return res.status(400).json({ error: "nilai di luar rentang" });
   }
+  if (d.rs !== undefined && !inRange(d.rs, 0, 1e7)) delete d.rs; // rs ngaco -> abaikan, jangan tolak data
 
   const isTest = d.test === true;
-  // warmup:true = sensor baru dinyalakan / masih stabil. Data disimpan dan ditampilkan,
-  // tetapi TIDAK dihitung ke rata-rata per jam, jadi tidak mempengaruhi iAQI.
+  // warmup:true = disimpan dan ditampilkan, tetapi TIDAK masuk rata-rata per jam / iAQI.
   const isWarmup = d.warmup === true;
-  const coUgm3 = ppmToUgm3(d.co, d.temp);
+
+  const comp = compensate(nodeId, d);
+  const coUgmRaw = ppmToUgm3(d.co, d.temp);
+  const coUgmComp = comp.coComp !== null ? ppmToUgm3(comp.coComp, d.temp) : null;
+  const coUgmUsed = comp.useComp && coUgmComp !== null ? coUgmComp : coUgmRaw;
 
   try {
     await db.collection(COLLECTION).add({
-      nodeId, temp: d.temp, humidity: d.humidity, co: d.co, coUgm3,
+      nodeId, temp: d.temp, humidity: d.humidity,
+      co: d.co,                       // ppm mentah
+      coUgm3: coUgmRaw,               // tetap mentah, kompatibel dengan dashboard lama
+      rs: comp.rs ?? null,
+      coComp: comp.coComp,            // ppm terkoreksi (null jika belum ada koefisien)
+      coCompUgm3: coUgmComp,
+      compUsed: comp.useComp,         // true = iAQI memakai nilai terkoreksi
       test: isTest, warmup: isWarmup, createdAt: FieldValue.serverTimestamp(),
     });
     if (!isWarmup) {
-      await addToHourly(nodeId, d, coUgm3, isTest);
+      await addToHourly(nodeId, d, coUgmUsed, coUgmRaw, comp, isTest);
       await updateStatus(nodeId);
     }
-    return res.status(200).json({ ok: true, warmup: isWarmup });
+    return res.status(200).json({ ok: true, warmup: isWarmup, comp: comp.coComp !== null });
   } catch (e) {
     console.error("Gagal tulis Firestore:", e.message);
     return res.status(500).json({ error: "firestore" });

@@ -52,6 +52,7 @@ import {
 } from "./useSensorReadings";
 import NodeMap from "./NodeMap";
 import { NODE_META, PLANNED_SITES } from "./NodeMeta";
+import { EVENTS } from "./Events";
 
 const navItems = [
   { id: "overview", label: "Public View", icon: LayoutDashboard },
@@ -125,7 +126,7 @@ const RANGES = [
   { id: "168", label: "7 hari", hours: 168 },
 ];
 const NODE_COLORS = ["#168574", "#8564c7", "#c78338", "#4d8fd7", "#c0392b"];
-const WARMUP_MIN = 60;
+const SAMPLES_PER_HOUR = 24; // 3600 s / 150 s per siklus heater
 
 // Label sumbu-X: jam saja untuk 24 jam, tanggal + jam untuk rentang lebih panjang.
 function axisLabel(ms, long) {
@@ -1031,6 +1032,24 @@ function Analytics({ node, status, readings, hourly, rangeHourly, rangeIaqi, nod
     "ugm3",
     long
   );
+  // Garis penanda kejadian: dipetakan ke label jam terdekat yang ada di grafik.
+  const hourMsSet = new Set(compareData.map((d) => d.hourMs));
+  const eventMarks = EVENTS.map((e) => {
+    const hourMs = Math.floor(new Date(e.at).getTime() / 3600_000) * 3600_000;
+    return hourMsSet.has(hourMs) ? { x: axisLabel(hourMs, long), label: e.label } : null;
+  }).filter(Boolean);
+  const quality = nodes.map((n) => {
+    const rows = rangeHourly.filter((h) => h.nodeId === n.id);
+    const samples = rows.reduce((a, h) => a + (h.count ?? 0), 0);
+    const hours = rows.filter((h) => (h.count ?? 0) > 0).length;
+    return {
+      id: n.id,
+      hours,
+      completeness: Math.min(100, (samples / (range.hours * SAMPLES_PER_HOUR)) * 100),
+      testSamples: rows.reduce((a, h) => a + (h.testCount ?? 0), 0),
+      lastSeen: n.lastSeen,
+    };
+  });
   const iaqiNodeIds = [...new Set(rangeIaqi.map((h) => h.nodeId))].sort();
   const iaqiData = pivotByHour(
     rangeIaqi.filter((h) => h.enough && h.iaqi != null),
@@ -1040,6 +1059,13 @@ function Analytics({ node, status, readings, hourly, rangeHourly, rangeIaqi, nod
   const envHours = nodeRange.filter((h) => h.avgPpm != null && h.avgTemp != null && h.avgHum != null && h.testCount === 0);
   const tempPairs = envHours.map((h) => ({ x: Number(h.avgTemp.toFixed(1)), y: Number(h.avgPpm.toFixed(2)) }));
   const humPairs = envHours.map((h) => ({ x: Number(h.avgHum.toFixed(0)), y: Number(h.avgPpm.toFixed(2)) }));
+  // Perbandingan ppm mentah vs terkoreksi suhu/RH (eksperimental). Muncul hanya jika ada data terkoreksi.
+  const compHours = nodeRange.filter((h) => h.avgPpm != null && h.avgPpmComp != null);
+  const compData = compHours.map((h) => ({
+    label: h.label,
+    mentah: Number(h.avgPpm.toFixed(2)),
+    terkoreksi: Number(h.avgPpmComp.toFixed(2)),
+  }));
   const rTemp = pearson(tempPairs);
   const rHum = pearson(humPairs);
   const recent = [...readings].reverse().slice(0, 15);
@@ -1217,6 +1243,10 @@ function Analytics({ node, status, readings, hourly, rangeHourly, rangeIaqi, nod
                 <YAxis tickLine={false} axisLine={false} tick={{ fill: "#87938f", fontSize: 10 }} />
                 <Tooltip />
                 <Legend wrapperStyle={{ fontSize: 11 }} />
+                {eventMarks.map((e) => (
+                  <ReferenceLine key={e.label + e.x} x={e.x} stroke="#c78338" strokeDasharray="4 4"
+                    label={{ value: e.label, fill: "#a97722", fontSize: 10, position: "insideTopLeft" }} />
+                ))}
                 {nodeIds.map((id, i) => (
                   <Line key={id} type="monotone" dataKey={id} stroke={NODE_COLORS[i % NODE_COLORS.length]} strokeWidth={2} dot={false} connectNulls={false} />
                 ))}
@@ -1225,6 +1255,43 @@ function Analytics({ node, status, readings, hourly, rangeHourly, rangeIaqi, nod
           </div>
         </section>
       )}
+
+      <section className="panel nodes-full-panel quality-panel">
+        <div className="panel-header nodes-header">
+          <div>
+            <h2>Kualitas data</h2>
+            <p>Kelengkapan data per node, {range.label} terakhir. Dasar syarat 75 % (≥{REQUIRED_HOURS} dari 24 jam) pada iAQI.</p>
+          </div>
+        </div>
+        <div className="table-scroll">
+          <table className="node-table">
+            <thead>
+              <tr>
+                <th>NODE</th>
+                <th>JAM ADA DATA</th>
+                <th>KELENGKAPAN SAMPEL</th>
+                <th>SAMPEL UJI</th>
+                <th>PEMBACAAN TERAKHIR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {quality.map((q) => (
+                <tr key={q.id}>
+                  <td className="table-number">{q.id}</td>
+                  <td className="table-number">{q.hours} / {range.hours}</td>
+                  <td className="table-number">{q.completeness.toFixed(0)}%</td>
+                  <td className="table-number">{q.testSamples}</td>
+                  <td className="last-seen">{q.lastSeen}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {quality.length === 0 && <div className="empty-state">Belum ada data.</div>}
+        <div className="table-foot">
+          <span>Perkiraan 1 sampel tiap 2,5 menit = {SAMPLES_PER_HOUR} sampel per jam.</span>
+        </div>
+      </section>
 
       <div className="lower-grid analytics-lower">
         <section className="panel chart-panel">
@@ -1255,6 +1322,30 @@ function Analytics({ node, status, readings, hourly, rangeHourly, rangeIaqi, nod
           <ScatterPanel data={humPairs} xName="Kelembapan" xUnit="%" color="#4d8fd7" />
         </section>
       </div>
+
+      {compData.length >= 2 && (
+        <section className="panel chart-panel">
+          <div className="panel-header">
+            <div>
+              <h2>ppm mentah vs terkoreksi suhu/RH</h2>
+              <p>Rata-rata per jam ({compData.length} jam). Koreksi eksperimental: koefisien awal dari kurva datasheet MQ-7 (Fig. 4), diganti hasil fit data udara bersih setelah data cukup.</p>
+            </div>
+            <span className="chart-note">EKSPERIMENTAL</span>
+          </div>
+          <div className="small-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={compData} margin={{ top: 10, right: 8, left: -14, bottom: 0 }}>
+                <CartesianGrid stroke="#e9efed" strokeDasharray="4 5" />
+                <XAxis dataKey="label" tickLine={false} axisLine={false} tick={{ fill: "#87938f", fontSize: 10 }} minTickGap={24} />
+                <YAxis tickLine={false} axisLine={false} tick={{ fill: "#87938f", fontSize: 10 }} unit=" ppm" />
+                <Tooltip />
+                <Line type="monotone" dataKey="mentah" name="Mentah" stroke="#87938f" strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="terkoreksi" name="Terkoreksi" stroke="#1f8a70" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+      )}
 
       <div className="info-callout">
         <ShieldCheck size={18} />
@@ -1601,9 +1692,11 @@ function Methodology() {
             dibandingkan dengan alat ukur referensi.
           </li>
           <li>
-            Pembacaan MQ-7 saat ini <strong>belum dikoreksi</strong> suhu dan kelembapan. DHT22 dipakai untuk
-            konversi satuan dan sebagai data pendukung. Panel scatter di Analytics menunjukkan hubungan
-            empiris suhu/RH terhadap CO per jam; koreksi hanya diterapkan setelah data cukup membuktikannya.
+            Pengaruh suhu dan kelembapan terhadap MQ-7 (Fig. 4 datasheet) dianalisis dari data udara bersih
+            tiap node. Koreksi <strong>eksperimental</strong>: Rs dibagi exp(a·ΔT + b·ΔRH) dengan koefisien
+            per node, lalu dikonversi ke ppm. Nilai mentah selalu disimpan dan dapat dibandingkan di
+            Analytics. iAQI memakai nilai terkoreksi hanya pada node yang koefisiennya sudah divalidasi;
+            selain itu iAQI memakai nilai mentah.
           </li>
           <li>
             Sensor MQ-7 butuh waktu pemanasan. Setelah node baru menyala (atau lama mati), pembacaan 60 menit
