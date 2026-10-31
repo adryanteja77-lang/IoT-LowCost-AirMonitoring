@@ -305,6 +305,8 @@ function App() {
         humidity: toNumber(item.humidity),
         co: toNumber(item.co),
         coUgm3: toNumber(item.coUgm3),
+        coComp: toNumber(item.coComp),
+        compUsed: item.compUsed === true,
         test: item.test === true,
         warmup: item.warmup === true,
       })),
@@ -868,7 +870,9 @@ function PublicView({ loading, node, status, latestReading, readings, setPage, n
               ? "Data uji, belum terkalibrasi"
               : latestReading?.warmup
                 ? "Sensor masih pemanasan, belum dihitung"
-                : "Perkiraan sensor MQ-7"
+                : latestReading?.coComp != null
+                  ? `Terkoreksi suhu/RH (eksperimental): ${formatNumber(latestReading.coComp, 2)} ppm`
+                  : "Perkiraan sensor MQ-7"
           }
         />
 
@@ -1405,7 +1409,8 @@ function Analytics({ node, status, readings, hourly, rangeHourly, rangeIaqi, nod
                 <th>WAKTU</th>
                 <th>SUHU</th>
                 <th>KELEMBAPAN</th>
-                <th>CO (PPM)</th>
+                <th>CO MENTAH (PPM)</th>
+                <th>CO TERKOREKSI (PPM)</th>
                 <th>JENIS DATA</th>
               </tr>
             </thead>
@@ -1421,6 +1426,9 @@ function Analytics({ node, status, readings, hourly, rangeHourly, rangeIaqi, nod
                   </td>
                   <td className="table-number">
                     {r.co == null ? "—" : r.co.toFixed(2)}
+                  </td>
+                  <td className="table-number">
+                    {r.coComp == null ? "—" : r.coComp.toFixed(2)}
                   </td>
                   <td>
                     <span
